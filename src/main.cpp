@@ -3,6 +3,7 @@
 #include <PubSubClient.h>
 #include <Wire.h>
 #include <SensirionI2cScd4x.h>
+#include <Adafruit_BME280.h>
 
 // ===== PMS5003 =====
 #include <HardwareSerial.h>
@@ -22,12 +23,16 @@ PubSubClient client(espClient);
 // ===== SCD41 =====
 SensirionI2cScd4x scd4x;
 
+// ===== BME280 =====
+Adafruit_BME280 bme;
+
 unsigned long lastMsg = 0;
 
 // ===== WiFi =====
 void setup_wifi()
 {
   Serial.println("Connecting WiFi...");
+
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED)
@@ -46,6 +51,7 @@ void reconnect()
   while (!client.connected())
   {
     Serial.print("Connecting MQTT...");
+
     if (client.connect("ESP32Client"))
     {
       Serial.println("connected!");
@@ -63,21 +69,39 @@ void reconnect()
 void setup()
 {
   Serial.begin(115200);
+
   delay(1000);
 
   // ===== I2C =====
   Wire.begin(8, 9);
 
+  // ===== SCD41 =====
   scd4x.begin(Wire, 0x62);
+
   scd4x.stopPeriodicMeasurement();
   delay(500);
   scd4x.startPeriodicMeasurement();
 
-  // ===== PMS5003 UART =====
+  Serial.println("SCD41 ready");
+
+  // ===== BME280 =====
+  if (!bme.begin(0x76))
+  {
+    Serial.println("BME280 not found!");
+  }
+  else
+  {
+    Serial.println("BME280 ready");
+  }
+
+  // ===== PMS5003 =====
   pmsSerial.begin(9600, SERIAL_8N1, 16, 17);
+
+  Serial.println("PMS5003 ready");
 
   // ===== WiFi + MQTT =====
   setup_wifi();
+
   client.setServer(mqtt_server, 1883);
 }
 
@@ -85,6 +109,7 @@ void loop()
 {
   if (!client.connected())
     reconnect();
+
   client.loop();
 
   // ===== 每5秒讀一次 =====
@@ -92,12 +117,15 @@ void loop()
   {
     lastMsg = millis();
 
-    // ===== SCD41 =====
-    uint16_t co2;
-    float temp;
-    float hum;
+    // =========================
+    // SCD41
+    // =========================
 
-    uint16_t error = scd4x.readMeasurement(co2, temp, hum);
+    uint16_t co2;
+    float scdTemp;
+    float scdHum;
+
+    uint16_t error = scd4x.readMeasurement(co2, scdTemp, scdHum);
 
     if (error || co2 == 0)
     {
@@ -105,42 +133,110 @@ void loop()
       return;
     }
 
-    // ===== PMS5003 =====
-    int pm1 = -1, pm2_5 = -1, pm10 = -1;
+    // =========================
+    // BME280
+    // =========================
 
-    if (pmsSerial.available() >= 32)
+    float temp = bme.readTemperature();
+    float hum = bme.readHumidity();
+    float pressure = bme.readPressure() / 100.0F;
+
+    // =========================
+    // PMS5003
+    // =========================
+
+    int pm1 = -1;
+    int pm2_5 = -1;
+    int pm10 = -1;
+
+    while (pmsSerial.available() >= 32)
     {
+      // 尋找 frame header
       if (pmsSerial.read() == 0x42)
       {
-        if (pmsSerial.read() == 0x4D)
+        if (pmsSerial.peek() == 0x4D)
         {
-          pmsSerial.readBytes(pmsBuffer, 30);
+          pmsSerial.read(); // 讀掉 0x4D
 
-          pm1 = (pmsBuffer[4] << 8) | pmsBuffer[5];
-          pm2_5 = (pmsBuffer[6] << 8) | pmsBuffer[7];
-          pm10 = (pmsBuffer[8] << 8) | pmsBuffer[9];
+          uint8_t buffer[30];
+
+          if (pmsSerial.readBytes(buffer, 30) == 30)
+          {
+            // checksum 計算
+            uint16_t sum = 0x42 + 0x4D;
+
+            for (int i = 0; i < 28; i++)
+            {
+              sum += buffer[i];
+            }
+
+            uint16_t receivedChecksum =
+                (buffer[28] << 8) | buffer[29];
+
+            if (sum == receivedChecksum)
+            {
+              pm1 = (buffer[4] << 8) | buffer[5];
+              pm2_5 = (buffer[6] << 8) | buffer[7];
+              pm10 = (buffer[8] << 8) | buffer[9];
+
+              break;
+            }
+            else
+            {
+              Serial.println("PMS checksum error");
+            }
+          }
         }
       }
-
-      // 清空殘留資料
-      while (pmsSerial.available())
-        pmsSerial.read();
     }
 
-    Serial.printf("Temp:%.1f Hum:%.1f CO2:%d PM1.0:%d PM2.5:%d PM10:%d\n",
-                  temp, hum, co2, pm1, pm2_5, pm10);
+    // PMS 無效值過濾
+    if (pm1 < 0)
+      pm1 = 0;
+    if (pm2_5 < 0)
+      pm2_5 = 0;
+    if (pm10 < 0)
+      pm10 = 0;
 
-    // ===== JSON 整合 =====
-    char msg[150];
-    if (pm1 < 0 || pm2_5 < 0 || pm10 < 0)
+    // =========================
+    // Serial Monitor
+    // =========================
+
+    Serial.printf(
+        "Temp:%.1f°C Hum:%.1f%% Pressure:%.1fhPa CO2:%dppm PM1.0:%d PM2.5:%d PM10:%d\n",
+        temp,
+        hum,
+        pressure,
+        co2,
+        pm1,
+        pm2_5,
+        pm10);
+
+    // =========================
+    // MQTT JSON
+    // =========================
+
+    char msg[200];
+
+    sprintf(
+        msg,
+        "{\"temp\":%.1f,\"hum\":%.1f,\"pressure\":%.1f,\"co2\":%d,\"pm1\":%d,\"pm2_5\":%d,\"pm10\":%d}",
+        temp,
+        hum,
+        pressure,
+        co2,
+        pm1,
+        pm2_5,
+        pm10);
+
+    // MQTT publish
+    if (client.publish("airbox/data", msg))
     {
-      Serial.println("Skip invalid PMS data");
-      return;
+      Serial.println("MQTT Send OK");
     }
-    sprintf(msg,
-            "{\"temp\":%.1f,\"hum\":%.1f,\"co2\":%d,\"pm1\":%d,\"pm2_5\":%d,\"pm10\":%d}",
-            temp, hum, co2, pm1, pm2_5, pm10);
-
-    client.publish("airbox/data", msg);
+    else
+    {
+      Serial.println("MQTT Send Failed");
+    }
   }
 }
