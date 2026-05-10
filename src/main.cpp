@@ -95,7 +95,7 @@ void setup()
   }
 
   // ===== PMS5003 =====
-  pmsSerial.begin(9600, SERIAL_8N1, 16, 17);
+  pmsSerial.begin(9600, SERIAL_8N1, 16, -1);
 
   Serial.println("PMS5003 ready");
 
