@@ -37,12 +37,12 @@ Adafruit_BME280 bme;
 
 // ===== ST7735 =====
 
-#define TFT_CS 10
-#define TFT_DC 9
-#define TFT_RST 8
+#define TFT_CS 46
+#define TFT_DC 45
+#define TFT_RST 42
 
-#define TFT_MOSI 11
-#define TFT_SCLK 12
+#define TFT_MOSI 41
+#define TFT_SCLK 40
 
 Adafruit_ST7735 tft =
     Adafruit_ST7735(&SPI, TFT_CS, TFT_DC, TFT_RST);
@@ -98,9 +98,9 @@ void initDisplay()
 {
   SPI.begin(TFT_SCLK, -1, TFT_MOSI, TFT_CS);
 
-  tft.initR(INITR_REDTAB);
+  tft.initR(INITR_BLACKTAB);
 
-  tft.setRotation(1);
+  tft.setRotation(2);
 
   tft.fillScreen(ST77XX_BLACK);
 
@@ -108,11 +108,15 @@ void initDisplay()
 
   tft.setTextSize(2);
 
-  tft.setCursor(10, 30);
+  tft.setCursor(35, 40);
+  tft.println("Hello");
 
-  tft.println("HELLO");
+  tft.setCursor(28, 70);
+  tft.println("AirBox");
 
   Serial.println("TFT OK");
+
+  delay(2000);
 }
 
 void drawValues(
@@ -133,7 +137,8 @@ void drawValues(
   tft.setCursor(0, 0);
   tft.print("Temp: ");
   tft.print(temp);
-  tft.println(" C");
+  tft.println(" \xF7"
+              "C");
 
   tft.setCursor(0, 15);
   tft.print("Hum: ");
@@ -152,15 +157,18 @@ void drawValues(
 
   tft.setCursor(0, 60);
   tft.print("PM1.0: ");
-  tft.println(pm1);
+  tft.print(pm1);
+  tft.println(" ug/m3");
 
   tft.setCursor(0, 75);
   tft.print("PM2.5: ");
-  tft.println(pm2_5);
+  tft.print(pm2_5);
+  tft.println(" ug/m3");
 
   tft.setCursor(0, 90);
-  tft.print("PM10: ");
-  tft.println(pm10);
+  tft.print("PM10 : ");
+  tft.print(pm10);
+  tft.println(" ug/m3");
 }
 
 // ===== Setup =====
@@ -312,7 +320,7 @@ void loop()
     // ===== Serial Monitor =====
 
     Serial.printf(
-        "Temp:%.1fC Hum:%.1f%% Pressure:%.1fhPa CO2:%dppm PM1:%d PM2.5:%d PM10:%d\n",
+        "Temp: %.1f °C  Hum: %.1f %%  Pressure: %.1f hPa  CO2: %d ppm  PM1: %d ug/m3  PM2.5: %d ug/m3  PM10: %d ug/m3\n",
         temp,
         hum,
         pressure,
@@ -320,7 +328,6 @@ void loop()
         pm1,
         pm2_5,
         pm10);
-
     // ===== TFT =====
 
     drawValues(
